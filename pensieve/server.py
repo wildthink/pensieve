@@ -225,6 +225,8 @@ def _team_key(team):
 
 def _insights_due():
     """The main insights: written once at first, then rewritten when out of date (if that's switched on)."""
+    if not llm.writes_insights():  # the engine in use can't (Apple's on-device model)
+        return False
     raw = store.meta("insights")
     if raw is None:
         return True
@@ -232,6 +234,10 @@ def _insights_due():
 
 
 async def run_insights(scope=None, sids=None):
+    if not llm.writes_insights():
+        broadcast({"type": "toast", "message": "Apple Intelligence's on-device model can't write insights. Choose "
+                                               "another engine in Settings → AI & Insights for them."})
+        return
     if status["insights_running"]:
         return
     status.update(insights_running=True, insights_scope=scope)

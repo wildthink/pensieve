@@ -23,6 +23,7 @@ APP=build/Pensieve.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Pensieve"
+cp "$(dirname "$BIN")/pensieve-fm" "$APP/Contents/MacOS/pensieve-fm"  # Apple Intelligence for the backend
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 codesign --force --deep -s - "$APP"
