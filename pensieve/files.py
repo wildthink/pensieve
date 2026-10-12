@@ -621,6 +621,16 @@ class Files:
                             display=r[0].replace(home, "~", 1)))
         return out
 
+    def has(self, path, under=False):
+        """Is this path in the index? `under`: or is anything indexed inside it (a folder of documents)."""
+        with self.lock:
+            if under:
+                p = path.rstrip("/")
+                q, args = "SELECT 1 FROM files WHERE path=? OR (path>=? AND path<?) LIMIT 1", (p, p + "/", p + "0")
+            else:
+                q, args = "SELECT 1 FROM files WHERE path=? LIMIT 1", (path,)
+            return self.db.execute(q, args).fetchone() is not None
+
     def file(self, path):
         with self.lock:
             r = self.db.execute("SELECT path, root, name, ext, kind, mtime, size, n_chunks, author, author_source FROM files WHERE path=?", (path,)).fetchone()

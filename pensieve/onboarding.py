@@ -125,6 +125,27 @@ def _repos(s, on):
     return out
 
 
+CLOUD = ("Library/Mobile Documents", "Library/CloudStorage")  # iCloud Drive and other synced drives: documents
+
+
+def check_agent_folder(path, cwd=None):
+    """For a documents folder an agent asks to index: refuse hidden and excluded folders (like ~/.ssh, ~/.aws or
+    ~/Library), where keys and app data live. files.walk never goes into these below a root; this keeps an agent
+    (maybe following instructions planted in what it read) from making one a root. The user can still add any
+    folder in Settings."""
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        p = Path(cwd or Path.cwd()) / p
+    p = p.resolve()
+    rel = str(p.relative_to(Path.home())) if p.is_relative_to(Path.home()) else ""
+    if any(rel == c or rel.startswith(c + "/") for c in CLOUD):
+        return
+    exclude = set(settings.get("exclude"))
+    if any(x.startswith(".") or x in exclude for x in p.parts[1:]):
+        raise ValueError(f"{path} is a hidden or excluded folder, where keys and app data live; agents can't add it "
+                         f"for indexing. The user can add it in Pensieve's Settings.")
+
+
 def add(kind: str, path: str) -> str:
     """Add a folder the scan didn't find: 'files' (documents), 'repos' (a repo, or a folder of repos, whatever their
     size) or 'agents' (a folder of agent transcripts). Returns the source id to pass to `start`. ValueError if unusable."""
@@ -156,7 +177,7 @@ def add(kind: str, path: str) -> str:
     return sid
 
 
-def index(path: str, cwd=None) -> dict:
+def index(path: str, cwd=None, agent=False) -> dict:
     """Index a folder from now on, whatever it holds: a git repo, a folder of repos, a folder of agent sessions, or
     documents. Turns on that one source; when its whole category was off, the category's other sources stay off."""
     from pensieve.repos import find_repos
@@ -172,6 +193,8 @@ def index(path: str, cwd=None) -> dict:
         kind, what = "agents", "agent sessions"
     else:
         kind, what = "files", "documents"
+        if agent:
+            check_agent_folder(p)
     sid = add(kind, _tilde(p) if kind == "files" else str(p))
     off = [d for d in settings.get("disabled") if d != sid]
     if kind in off:  # the category was off: only this source comes on

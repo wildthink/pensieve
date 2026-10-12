@@ -24,13 +24,24 @@ agent_client = contextvars.ContextVar("agent_client", default=None)  # ?client=:
 agent_conn = contextvars.ContextVar("agent_conn", default=None)  # ?conn=: one id per agent connection (stdio bridge)
 
 
+# Settings that decide where indexed text is sent for AI work (or which model runs on it). Only the user changes these,
+# in Settings or with `pensieve` in a terminal: an agent told to by a planted instruction could otherwise send the
+# user's sessions and code to a server of the attacker's choosing.
+USER_ONLY_SETTINGS = {"ai", "llm_url", "llm_key", "llm_model", "llm_connections", "builtin_model", "agent_model"}
+# Lists an agent may add to but not shorten: emptying them would let secrets into the index.
+ADD_ONLY_SETTINGS = {"exclude", "exclude_files"}
+
+
+def _allowed(name: str) -> bool:
+    """The tools this connection gets. Enforced on every call, not only in the list: a hidden tool can't be called."""
+    if tool_profile.get() == "all":
+        return True
+    return name in AGENT_TOOLS or (name in SETUP_TOOLS and not settings.get("setup_done"))
+
+
 class _Server(MCPServer):
     async def list_tools(self):
-        tools = await super().list_tools()
-        if tool_profile.get() == "all":
-            return tools
-        shown = AGENT_TOOLS | (set() if settings.get("setup_done") else SETUP_TOOLS)
-        return [t for t in tools if t.name in shown]
+        return [t for t in await super().list_tools() if _allowed(t.name)]
 
 
 mcp = _Server(
@@ -73,6 +84,9 @@ def tool(name=None):
             info, t, res, err = {}, time.perf_counter(), None, None
             token = usage.current.set(info)
             try:
+                if not _allowed(name or fn.__name__):
+                    raise ValueError(f"{name or fn.__name__} isn't available on this connection; the user can turn on "
+                                     f"Pensieve's management tools with `pensieve mcp --all-tools` (or ?tools=all)")
                 res = fn(*a, **k)
                 return res
             except KeyError as e:
@@ -156,6 +170,7 @@ def read(id: str, max_chars: int = 12000) -> dict:
 @tool()
 def similar(id: str, limit: int = 8) -> str:
     """Items most similar in meaning to a search result id (e.g. other code that does the same thing)."""
+    _check(id)
     return _lines(_similar(id, limit)) or "Nothing similar."
 
 
@@ -234,7 +249,7 @@ def open_item(id: str, action: str = "open") -> dict:
     """Open an item on the user's Mac. action: 'open' (code opens in the editor at the line), 'reveal' (Finder) or
     'visualize' (the Pensieve map)."""
     _check(id)
-    return actions.open_item(id, action)
+    return actions.open_item(id, action, launch=False)
 
 
 @tool()
@@ -302,7 +317,18 @@ def get_settings() -> dict:
 @tool()
 def update_settings(changes: dict[str, Any]) -> dict:
     """Change settings, e.g. {"hotkey": "cmd+shift+space"}, {"editor": "cursor"}, {"max_repo_files": 20000},
-    {"exclude_files": [...]}. To switch what gets indexed on or off, use set_source. Takes effect within seconds."""
+    {"exclude_files": [...]}. To switch what gets indexed on or off, use set_source. Takes effect within seconds.
+    The AI engine settings (where text is sent for summaries) only change in Pensieve's Settings; exclude and
+    exclude_files can be added to here, not shortened."""
+    mine = sorted(USER_ONLY_SETTINGS & set(changes))
+    if mine:
+        raise ValueError(f"{', '.join(mine)}: only the user can change these, in Pensieve's Settings (AI tab), "
+                         f"since they decide where your indexed text is sent")
+    for k in ADD_ONLY_SETTINGS & set(changes):
+        gone = set(settings.get(k)) - set(changes[k] if isinstance(changes[k], list) else [])
+        if gone:
+            raise ValueError(f"{k} can only be added to from here; removing {', '.join(sorted(gone))} is done in "
+                             f"Pensieve's Settings")
     return {"settings": settings.public(settings.update(changes))}
 
 
@@ -340,6 +366,7 @@ def file_types() -> dict:
 @tool()
 def add_folder(path: str) -> dict:
     """Index another folder (documents in it, and any git repos inside it)."""
+    onboarding.check_agent_folder(path, agent_cwd.get())
     cur = settings.get("folders")
     return {"folders": settings.update({"folders": cur + [path]} if path not in cur else {})["folders"]}
 
@@ -354,7 +381,7 @@ def remove_folder(path: str) -> dict:
 def index_path(path: str) -> dict:
     """Index a folder when the user asks you to: a git repo, a folder of repos, a folder of agent sessions, or a
     folder of documents (Pensieve works out which). Relative paths are from your working folder."""
-    res = onboarding.index(path, agent_cwd.get())
+    res = onboarding.index(path, agent_cwd.get(), agent=True)
     from pensieve import server
     server.watch.force_full()
     return res
@@ -395,6 +422,8 @@ def setup_scan(profiles: list[str] | None = None, categories: list[str] | None =
 def setup_add_source(kind: str, path: str) -> dict:
     """Add a folder the scan missed: kind 'files' (documents), 'repos' (a repo, or a folder of repos) or 'agents' (a
     folder of agent transcripts). Returns the source id to include in setup_start."""
+    if kind == "files":
+        onboarding.check_agent_folder(path, agent_cwd.get())
     return {"id": onboarding.add(kind, path)}
 
 
