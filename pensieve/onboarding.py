@@ -55,10 +55,12 @@ def reads(category: str) -> str:
 def guide() -> dict:
     """Everything the first step needs, without reading any folder."""
     cats = {c: (label, desc) for c, label, desc in sources.CATEGORIES}
+    ai = llm.options()
     return {"done": settings.get("setup_done"), "about": ABOUT, "profiles": PROFILES,
             "categories": [dict(id=c, label=label, description=desc, reads=reads(c)) for c, (label, desc) in cats.items()],
             "ai": [{k: o[k] for k in ("id", "label", "privacy", "available", "description", "note") if k in o}
-                   for o in llm.options()],
+                   for o in ai],
+            "recommended_ai": llm.recommended(ai),
             "energy": ENERGY_NOTE, "files_per_minute": REPO_FILES_PER_MINUTE}
 
 

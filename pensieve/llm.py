@@ -1,6 +1,9 @@
 """Where summaries, topic names and insights get written. One setting, `ai`, picks the engine:
 
     builtin  Qwen 3.5 9B run by Pensieve itself with MLX (Apple Silicon; ~5 GB download on first use)
+    apple    Apple Intelligence's on-device model (macOS 26+), through the app's pensieve-fm helper; no download
+    pcc      Apple's larger model on Private Cloud Compute (macOS 27+, an app signed with Apple's PCC entitlement):
+             text leaves this Mac for Apple's servers, which don't keep it; a usage quota applies
     server   any OpenAI-compatible server, local (LM Studio, Ollama…) or hosted, at llm_url / llm_model (+ llm_key)
     claude   the Claude Code CLI (`claude -p`): uses your Claude account; text leaves this Mac
     codex    the Codex CLI (`codex exec`): uses your OpenAI account; text leaves this Mac
@@ -113,6 +116,17 @@ def options():
              note=("Uses the copy LM Studio already downloaded." if local else
                    "Downloads about 6 GB in the background; you can keep working.") if have_mlx
              else f"Needs an Apple Silicon Mac with {MIN_RAM_GB} GB of memory."),
+        dict(id="apple", label="Apple Intelligence", privacy="local", available=(fm := apple_status())["available"],
+             description="Apple's on-device model, built into macOS. Nothing leaves this Mac and there's nothing to "
+                         "download. Writes summaries, topic names and team summaries; the cross-topic insights "
+                         "(themes, open threads) need a larger model, so they stay off with this one.",
+             note="Ready." if fm["available"] else fm.get("reason", "")),
+        dict(id="pcc", label="Apple Private Cloud Compute", privacy="cloud", available=(pc := apple_status("pcc"))["available"],
+             description="Apple's larger model, on Apple's Private Cloud Compute servers. Session and code text is "
+                         "sent to Apple, which can't keep or see it. Writes insights too. Apple limits how much it's "
+                         "used, so conversation chunks aren't summarized one by one.",
+             note=("Ready." + (" Close to its usage limit." if pc.get("approaching_limit") else "")) if pc["available"]
+             else pc.get("reason", "")),
         dict(id="server", label="Model server", privacy="local" if is_local(s["llm_url"]) else "cloud", available=True,
              url=s["llm_url"], model=s["llm_model"], key_set=bool(s["llm_key"]), up=(up := _server_up(s["llm_url"])),
              connections=[dict(name=c["name"], url=c["url"], model=c["model"], key_set=bool(c["key"]), local=is_local(c["url"]))
@@ -156,6 +170,10 @@ def status() -> dict:
     elif p == "server":
         ok = _server_up(settings.get("llm_url"))
         st, detail = ("ready", f"{settings.get('llm_model')} at {settings.get('llm_url')}") if ok else ("offline", f"Can't reach {settings.get('llm_url')}")
+    elif p in ("apple", "pcc"):
+        fm = apple_status(p)
+        st, detail = (("ready", "Apple's on-device model" if p == "apple" else "Apple's Private Cloud Compute")
+                      if fm["available"] else ("error", fm.get("reason", "")))
     elif p == "builtin":
         st, detail = _builtin["status"], _builtin["detail"]
         if st == "off":
@@ -166,6 +184,7 @@ def status() -> dict:
         st, detail = ("ready", exe) if exe else ("error", f"{p} isn't installed")
     why = paused() if p != "none" else None
     return dict(setting=a, provider=p, configured=a != "auto", status=st, detail=detail, options=options(),
+                insights=writes_insights(),
                 enabled=p != "none", paused=why, progress=_builtin["progress"] if p == "builtin" else None,
                 on_battery_setting=settings.get("ai_on_battery"))
 
@@ -345,12 +364,113 @@ def _codex_argv(text, tmp):
             "--output-last-message", out, text], out
 
 
+# ---- apple, pcc: Apple's models (on-device, Private Cloud Compute), through the Mac app's pensieve-fm helper -----
+APPLE_CONTEXT = 4096   # tokens the model sees at once (instructions, prompt and reply), if the helper doesn't say
+APPLE_MAX_REPLY = 1500  # on-device: leaves room for a useful prompt
+_apple_cache = {}  # "apple" | "pcc" -> (when, status)
+
+
+def recommended(opts=None) -> str:
+    """The engine setup suggests: Apple Intelligence when this Mac has it (on-device, nothing to download), else the
+    built-in model, else none. Never a cloud engine: sending text off the Mac is the user's choice to make."""
+    opts = opts if opts is not None else options()
+    return next((i for i in ("apple", "builtin") if any(o["id"] == i and o["available"] for o in opts)), "none")
+
+
+def writes_insights() -> bool:
+    """Can the engine in use write the cross-topic insights? Not the on-device model: their JSON reply is long, and
+    its guided output stops early, at random, often missing whole sections (even with the prompt cut short)."""
+    return provider() != "apple"
+
+
+def apple_helper():
+    """pensieve-fm in the Mac app: where the app said (PENSIEVE_FM, set when it starts the backend), else an
+    installed copy of the app."""
+    for p in (os.environ.get("PENSIEVE_FM"), "/Applications/Pensieve.app/Contents/MacOS/pensieve-fm",
+              os.path.expanduser("~/Applications/Pensieve.app/Contents/MacOS/pensieve-fm")):
+        if p and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def apple_status(engine="apple") -> dict:
+    """{available, reason, context}: whether Apple's model for this engine ('apple' or 'pcc') can run now.
+    Cached for a minute (the UI asks often)."""
+    at, st = _apple_cache.get(engine, (0.0, None))
+    if st and time.time() - at < 60:
+        return st
+    exe = apple_helper() if sys.platform == "darwin" else None
+    if not exe:
+        st = dict(available=False, reason="Needs the Pensieve Mac app on macOS " + ("26" if engine == "apple" else "27")
+                  + " or later.")
+    else:
+        try:
+            r = subprocess.run([exe, "status", *(["pcc"] if engine == "pcc" else [])], capture_output=True, text=True,
+                               timeout=20)
+            st = json.loads(r.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
+            st = dict(available=False, reason=f"pensieve-fm didn't answer ({type(e).__name__})")
+    _apple_cache[engine] = (time.time(), st)
+    return st
+
+
+def _complete(schema, v) -> bool:
+    """Does `v` have everything the schema requires (keys, at least minItems)? The on-device model's guided
+    output can stop early, without an error, when the prompt and the schema leave it too little room."""
+    t = schema.get("type")
+    if t == "object":
+        return isinstance(v, dict) and all(k in v for k in schema.get("required", [])) and \
+            all(_complete(sub, v[k]) for k, sub in schema.get("properties", {}).items() if k in v)
+    if t == "array":
+        return isinstance(v, list) and len(v) >= schema.get("minItems", 0) and \
+            all(_complete(schema.get("items", {}), x) for x in v)
+    return True
+
+
+def _apple(prompt, system, max_tokens, temperature, schema, engine="apple"):
+    """One reply from Apple's model for this engine. With `schema`, its output is guided to the schema (parsed JSON
+    back). The prompt is cut to fit the context window (4,096 tokens on-device), from the end (as the other prompts are cut), so the
+    instructions and the first part of the text are what the model sees; cut further if it still doesn't fit, or if
+    a JSON reply comes back incomplete. The schema is in the model's context too, so it takes from the budget."""
+    exe = apple_helper()
+    if not exe:
+        raise Offline("Apple Intelligence needs the Pensieve Mac app on macOS 26 or later")
+    name = "Apple Intelligence" if engine == "apple" else "Private Cloud Compute"
+    context = apple_status(engine).get("context") or APPLE_CONTEXT
+    max_tokens = min(max_tokens, APPLE_MAX_REPLY if engine == "apple" else context // 2)
+    used = (len(system) + (len(json.dumps(schema)) if schema else 0)) / 3 + 200
+    chars = max(1000, int((context - max_tokens - used) * 3))  # ~3 characters a token (code, prose)
+    for _ in range(3):
+        req = dict(model="pcc" if engine == "pcc" else "device", system=system, prompt=prompt[:chars],
+                   max_tokens=max_tokens, temperature=temperature, schema=schema)
+        r = subprocess.run([exe, "respond"], input=json.dumps(req), capture_output=True, text=True, timeout=600)
+        if r.returncode == 0:
+            text = json.loads(r.stdout)["text"]
+            if not schema:
+                return text.strip()
+            d = json.loads(text)
+            if _complete(schema, d):
+                return d
+            chars = int(chars * 0.75)
+            continue
+        why = (r.stderr or r.stdout).strip()[:300]
+        if r.returncode == 2:  # not available now (for PCC also: offline, quota used up)
+            _apple_cache.pop(engine, None)
+            raise Offline(why)
+        if r.returncode != 3:  # 4: guardrails declined this text; 1: anything else
+            raise RuntimeError(f"{name}: {why}")
+        chars = int(chars * 0.6)
+    raise RuntimeError(f"{name}: the text doesn't fit the model (its replies came back incomplete)")
+
+
 def complete(prompt: str, system: str = "", max_tokens: int = 200, temperature: float = 0.2, schema: dict | None = None):
     """One-shot completion with the chosen engine. With `schema`, returns the parsed JSON object.
     Raises Offline when no engine is available, so callers can skip AI work quietly."""
     p = provider()
     if p == "none":
         raise Offline("AI is off")
+    if p in ("apple", "pcc"):
+        return _apple(prompt, system, max_tokens, temperature, schema, p)
     if p in ("claude", "codex"):
         text = _cli(_claude_argv if p == "claude" else _codex_argv, prompt + (_schema_hint(schema) if schema else ""), system)
         return _json_from(text) if schema else _strip_think(text)

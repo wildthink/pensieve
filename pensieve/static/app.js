@@ -2010,7 +2010,7 @@ async function openSetup() {
   try { setupState.guide = await api('/api/setup?scan=0'); }
   catch (e) { el.innerHTML = `<div class="setup-card"><p class="err">Could not load setup: ${esc(e.message)}</p></div>`; return; }
   const ai = setupState.guide.ai;
-  setupState.ai = ai.find(o => o.id === 'builtin' && o.available) ? 'builtin' : 'none';
+  setupState.ai = setupState.guide.recommended_ai || (ai.find(o => o.id === 'builtin' && o.available) ? 'builtin' : 'none');
   renderSetup();
 }
 const setupCats = () => { const want = new Set(setupState.guide.profiles.filter(p => setupState.profiles.has(p.id)).flatMap(p => p.categories));

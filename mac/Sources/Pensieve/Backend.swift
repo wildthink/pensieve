@@ -284,6 +284,7 @@ final class Backend: ObservableObject {
         p.arguments = ["serve", "--no-open", "--port", String(port)]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "\(home)/.local/bin:/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        env["PENSIEVE_FM"] = Bundle.main.bundlePath + "/Contents/MacOS/pensieve-fm"  // the `apple` AI engine
         p.environment = env
         let dir = "\(home)/.pensieve"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

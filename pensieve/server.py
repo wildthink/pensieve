@@ -225,6 +225,8 @@ def _team_key(team):
 
 def _insights_due():
     """The main insights: written once at first, then rewritten when out of date (if that's switched on)."""
+    if not llm.writes_insights():  # the engine in use can't (Apple's on-device model)
+        return False
     raw = store.meta("insights")
     if raw is None:
         return True
@@ -232,6 +234,10 @@ def _insights_due():
 
 
 async def run_insights(scope=None, sids=None):
+    if not llm.writes_insights():
+        broadcast({"type": "toast", "message": "Apple Intelligence's on-device model can't write insights. Choose "
+                                               "another engine in Settings → AI & Insights for them."})
+        return
     if status["insights_running"]:
         return
     status.update(insights_running=True, insights_scope=scope)
@@ -299,8 +305,8 @@ async def enricher():
                 await asyncio.sleep(10)
                 continue
             sess, topics, chunks = summarize.pending(store)
-            if llm.provider() in ("claude", "codex"):
-                chunks = []  # one CLI call per conversation chunk would be thousands of cloud calls
+            if llm.provider() in ("claude", "codex", "pcc"):
+                chunks = []  # one call per conversation chunk would be thousands of cloud calls (and PCC has a quota)
             data_topics = [t for t in await _run(datamap.pending_topics) if t["sig"] not in failed_topics]
             if data_topics:  # a handful of quick calls; first, so a session that keeps changing can't hold them up
                 res = await asyncio.gather(*[loop.run_in_executor(pool, summarize.name_data_topic, datamap, t) for t in data_topics[:3]],
