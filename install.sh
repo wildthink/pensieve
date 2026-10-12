@@ -1,6 +1,6 @@
 #!/bin/sh
-# Pensieve installer — https://tedhaley.ca/pensieve
-#   curl -fsSL https://tedhaley.ca/pensieve/install.sh | sh
+# Pensieve installer — https://github.com/wildthink/pensieve (a fork of TedHaley/pensieve)
+#   curl -fsSL https://raw.githubusercontent.com/wildthink/pensieve/main/install.sh | sh
 # On a Mac: downloads the latest Pensieve.dmg, copies the app to Applications, and installs the `pensieve` backend
 # from the wheel inside the app with the app's own uv. Nothing else is needed: no git, Xcode tools or Python.
 # Elsewhere, or with PENSIEVE_REF=main: installs uv if needed and the backend from source (git), and on a Mac with
@@ -9,7 +9,8 @@
 # PENSIEVE_NO_START=1 never starts it. PENSIEVE_NO_APP=1 skips the Mac app.
 set -eu
 
-REPO_URL="https://github.com/TedHaley/pensieve"
+REPO="wildthink/pensieve"  # where releases (Pensieve.dmg) and the source come from
+REPO_URL="https://github.com/$REPO"
 SRC="$HOME/.pensieve/src"
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 APP=""
@@ -67,7 +68,7 @@ install_from_dmg() {
 }
 
 install_from_source() {
-  REF="${PENSIEVE_REF:-$(curl -fsSL https://api.github.com/repos/TedHaley/pensieve/releases/latest 2>/dev/null \
+  REF="${PENSIEVE_REF:-$(curl -fsSL https://api.github.com/repos/$REPO/releases/latest 2>/dev/null \
     | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)}"
   REF="${REF:-main}"
   if ! command -v git >/dev/null 2>&1; then

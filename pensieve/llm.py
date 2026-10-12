@@ -318,8 +318,19 @@ def _claude_argv(text, tmp):
     exe = shutil.which("claude") or _find("claude")
     if not exe:
         raise Offline("Claude Code isn't installed")
+    # The prompt is indexed text (sessions, documents), which anyone could have planted instructions in, so the call
+    # gets no tools at all: no built-in ones (--tools ""), none of the user's MCP servers (an empty --mcp-config,
+    # strictly) and no skills. A list of disallowed tools misses every MCP tool.
     return [exe, "-p", text, "--model", settings.get("agent_model") or "haiku", "--output-format", "text",
-            "--disallowedTools", "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit", "--max-turns", "1"], None
+            "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}', "--disable-slash-commands",
+            "--max-turns", "1"], None
+
+
+# Codex features that give the model a tool (shell, MCP apps and plugins, browser, computer use, sub-agents...).
+# The read-only sandbox still lets a shell read any file, so it's off too.
+CODEX_OFF = ("shell_tool", "unified_exec", "code_mode_host", "apps", "plugins", "browser_use", "computer_use",
+             "in_app_browser", "tool_suggest", "skill_mcp_dependency_install", "multi_agent", "view_image",
+             "image_generation", "goals", "hooks")
 
 
 def _codex_argv(text, tmp):
@@ -327,7 +338,11 @@ def _codex_argv(text, tmp):
     if not exe:
         raise Offline("Codex isn't installed")
     out = os.path.join(tmp, "last.txt")
-    return [exe, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", out, text], out
+    # --ignore-user-config drops the MCP servers in ~/.codex/config.toml (sign-in still works); no tools, as for claude
+    off = [a for f in CODEX_OFF for a in ("--disable", f)]
+    return [exe, "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+            "--sandbox", "read-only", *off, "-c", 'web_search="disabled"', "-c", "include_apply_patch_tool=false",
+            "--output-last-message", out, text], out
 
 
 def complete(prompt: str, system: str = "", max_tokens: int = 200, temperature: float = 0.2, schema: dict | None = None):

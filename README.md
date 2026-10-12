@@ -12,7 +12,7 @@ Everything runs on your Mac. Text is embedded with `Qwen3-Embedding-0.6B` and st
 ## Install
 
 ```bash
-curl -fsSL https://tedhaley.ca/pensieve/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/wildthink/pensieve/main/install.sh | sh
 ```
 
 On an Apple Silicon Mac, the script downloads the latest `Pensieve.dmg` and copies the app to Applications. Then it installs the `pensieve` backend with the installer inside the app. You do not need git, the Xcode tools or Python. The app starts when you run the script in a terminal. When an agent runs it, the script installs only.
@@ -49,8 +49,8 @@ On Linux and Intel Macs, the script installs [uv](https://docs.astral.sh/uv/) an
 Or by hand:
 
 ```bash
-uv tool install git+https://github.com/TedHaley/pensieve   # the backend: `pensieve`
-git clone https://github.com/TedHaley/pensieve && pensieve/mac/build.sh --install   # the Mac app (needs the Xcode tools)
+uv tool install git+https://github.com/wildthink/pensieve   # the backend: `pensieve`
+git clone https://github.com/wildthink/pensieve && pensieve/mac/build.sh --install   # the Mac app (needs the Xcode tools)
 ```
 
 On first run Pensieve downloads the embedding model (~1.2 GB), then indexes in the background. Search and the map fill in as it goes.
@@ -249,7 +249,7 @@ On Apple Silicon, the embedding model runs on MLX. On other machines, it runs on
 ## Development
 
 ```bash
-git clone https://github.com/TedHaley/pensieve && cd pensieve
+git clone https://github.com/wildthink/pensieve && cd pensieve
 uv run pensieve          # backend
 mac/build.sh && open mac/build/Pensieve.app
 ```

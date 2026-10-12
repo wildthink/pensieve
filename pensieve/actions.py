@@ -2,6 +2,7 @@
 
 Item ids: 'file:/abs/path', 'code:<chunk id>', 'session:<session id>', 'folder:/abs/dir', 'person:<name>'
 (as returned by search)."""
+import os
 import subprocess
 import urllib.parse
 import webbrowser
@@ -16,10 +17,19 @@ def bind(**kw):
     ctx.update(kw)
 
 
+def _indexed_folder(path: str) -> bool:
+    """A folder of an indexed repo, or one that holds indexed documents."""
+    if any(path == r["root"] or path.startswith(r["root"] + "/") for r in ctx["repos"].list()):
+        return True
+    return ctx["files"].has(path, under=True)
+
+
 def resolve(id: str) -> dict:
+    """Only what Pensieve indexed: a 'file:' or 'folder:' id for any other path is unknown, so callers (agents
+    included) can't use an id to read or open an arbitrary file, such as one in ~/.ssh."""
     kind, _, ref = id.partition(":")
     if kind == "file":
-        if not Path(ref).exists():
+        if not ctx["files"].has(ref) or not Path(ref).exists():
             raise KeyError(id)
         return dict(kind="file", path=ref, line=None, title=Path(ref).name)
     if kind == "code":
@@ -34,7 +44,7 @@ def resolve(id: str) -> dict:
             raise KeyError(id)
         return dict(kind="session", path=None, line=None, title=s["title"], session=s)
     if kind == "folder":
-        if not Path(ref).is_dir():
+        if not Path(ref).is_dir() or not _indexed_folder(ref):
             raise KeyError(id)
         return dict(kind="folder", path=ref, line=None, title=Path(ref).name)
     if kind == "person" and ref:
@@ -141,12 +151,29 @@ def show_search(query: str = ""):
     return dict(ok=ok, note=None if ok else "The Pensieve Mac app isn't installed or running.")
 
 
-def open_item(id: str, action="open"):
+# Opening these with `open` runs something: an app, a script, an installer, a link to a URL or another file.
+RUNS = {".app", ".command", ".tool", ".terminal", ".workflow", ".action", ".scpt", ".scptd", ".applescript", ".pkg",
+        ".mpkg", ".dmg", ".jar", ".webloc", ".inetloc", ".fileloc", ".url", ".shortcut", ".prefpane", ".saver",
+        ".mobileconfig", ".bundle", ".plugin", ".osax", ".kext", ".alias"}
+
+
+def _runs(path: str) -> bool:
+    p = Path(path)
+    return p.suffix.lower() in RUNS or (p.is_file() and os.access(p, os.X_OK))
+
+
+def open_item(id: str, action="open", launch=True):
+    """`launch`: False for agents. Something that would run when opened (see RUNS, or an executable file) is shown
+    in Finder instead, so an agent can't start programs through Pensieve."""
     if action not in ("open", "reveal", "visualize"):
         raise ValueError("action must be open, reveal or visualize")
     r = resolve(id)
     if action == "visualize" or r["kind"] in ("session", "person"):
         return visualize(id=id)
+    if action == "open" and not launch and _runs(r["path"]):
+        subprocess.run(["open", "-R", r["path"]], check=False)
+        return dict(ok=True, path=r["path"], revealed=True,
+                    note="Shown in Finder: Pensieve doesn't open apps, scripts or installers for agents.")
     if r["kind"] == "folder" and action == "open":  # a folder opens in Finder
         subprocess.run(["open", r["path"]], check=False)
         return dict(ok=True, path=r["path"])

@@ -2344,7 +2344,7 @@ async function bindGeneral() {
   const ab = $('#aboutbox');
   try {
     const a = await api('/api/about');
-    if (ab) ab.innerHTML = `<div class="set-row" style="border-top:0"><div><div class="k">Version</div><div class="d">Pensieve ${esc(a.version)}</div></div><div><a class="btn" href="https://github.com/TedHaley/pensieve/releases" target="_blank" rel="noopener">Release notes</a></div></div>
+    if (ab) ab.innerHTML = `<div class="set-row" style="border-top:0"><div><div class="k">Version</div><div class="d">Pensieve ${esc(a.version)}</div></div><div><a class="btn" href="https://github.com/wildthink/pensieve/releases" target="_blank" rel="noopener">Release notes</a></div></div>
       <div class="set-row"><div><div class="k">Index</div><div class="d">${fmtBytes(a.index_bytes)} in <code>${esc(a.data_dir)}</code></div></div><div></div></div>`;
   } catch { if (ab) ab.innerHTML = '<p class="sc-p">Could not load version info.</p>'; }
   const chk = $('#updcheck'), msg = $('#updmsg');

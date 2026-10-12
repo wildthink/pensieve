@@ -1071,7 +1071,7 @@ async def update_check():
     cur = _version()
     try:
         async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get("https://api.github.com/repos/TedHaley/pensieve/releases/latest",
+            r = await c.get("https://api.github.com/repos/wildthink/pensieve/releases/latest",
                             headers={"Accept": "application/vnd.github+json", "User-Agent": f"Pensieve/{cur}"})
         r.raise_for_status()
         j = r.json()
