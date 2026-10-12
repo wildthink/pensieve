@@ -1,9 +1,11 @@
 import AppKit
+import CryptoKit
 
 /// Updates the user chooses to install. Checks GitHub's latest release ~30 s after launch and then daily (unless
 /// the `auto_update_check` setting is off); a newer version shows up in the menu and the search panel. Nothing is
-/// downloaded or installed until the user asks. Installing downloads Pensieve.dmg, checks the app inside (version
-/// and signature), swaps it in place of this app's bundle, and relaunches.
+/// downloaded or installed until the user asks. Installing downloads Pensieve.dmg and its Pensieve.dmg.sig, checks the
+/// signature against `publicKey` (the app is signed ad hoc, so its code signature can't say who built it), checks the
+/// app inside (version and code signature), swaps it in place of this app's bundle, and relaunches.
 @MainActor
 final class Updater: ObservableObject {
     static let shared = Updater()
@@ -11,7 +13,21 @@ final class Updater: ObservableObject {
     struct Release: Equatable {
         let version: String
         let dmg: URL
+        let sig: URL?  // Pensieve.dmg.sig: the DMG's Ed25519 signature, base64. A release without one won't install.
         let page: URL?
+    }
+
+    /// The release key's public half (Ed25519, base64): `swift mac/scripts/update_key.swift public <key>`. Only a
+    /// DMG signed with that key installs. mac/release.sh checks it matches the key it signs with.
+    nonisolated static let publicKey = "+/ZkhyN4w8ZL0J/rNHTPBJsI7uX5iDs3BIIoykFe1S4="
+
+    /// Is `sig` (base64) a signature of the file by the release key? Test instances (PENSIEVE_DEBUG) can name
+    /// another key in PENSIEVE_UPDATE_PUBLIC_KEY.
+    nonisolated static func verify(_ file: URL, signature sig: String, key: String = publicKey) -> Bool {
+        guard let raw = Data(base64Encoded: key), let pub = try? Curve25519.Signing.PublicKey(rawRepresentation: raw),
+              let s = Data(base64Encoded: sig.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return false }
+        return pub.isValidSignature(s, for: data)
     }
 
     enum Phase: Equatable {
@@ -112,8 +128,10 @@ final class Updater: ObservableObject {
               let assets = o["assets"] as? [[String: Any]],
               let asset = assets.first(where: { $0["name"] as? String == "Pensieve.dmg" }),
               let url = (asset["browser_download_url"] as? String).flatMap(URL.init(string:)) else { return nil }
+        let sig = assets.first(where: { $0["name"] as? String == "Pensieve.dmg.sig" })
+            .flatMap { ($0["browser_download_url"] as? String).flatMap(URL.init(string:)) }
         let version = tag.hasPrefix("v") || tag.hasPrefix("V") ? String(tag.dropFirst()) : tag
-        return Release(version: version, dmg: url, page: (o["html_url"] as? String).flatMap(URL.init(string:)))
+        return Release(version: version, dmg: url, sig: sig, page: (o["html_url"] as? String).flatMap(URL.init(string:)))
     }
 
     /// Numeric semver compare ("0.10.0" > "0.9.2"); anything after '-' or '+' is ignored.
@@ -154,6 +172,15 @@ final class Updater: ObservableObject {
             do {
                 let work = FileManager.default.temporaryDirectory.appendingPathComponent("pensieve-update-\(UUID().uuidString)")
                 try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+                guard let sigURL = rel.sig else {
+                    throw UpdateError("This release isn't signed, so Pensieve won't install it. Download it from the release page instead.")
+                }
+                var sreq = URLRequest(url: sigURL)
+                sreq.timeoutInterval = 30
+                let (sd, sr) = try await URLSession.shared.data(for: sreq)
+                guard (sr as? HTTPURLResponse)?.statusCode ?? 200 == 200, let sig = String(data: sd, encoding: .utf8) else {
+                    throw UpdateError("Couldn't download the update's signature.")
+                }
                 let dmg = work.appendingPathComponent("Pensieve.dmg")
                 try await Downloader.fetch(rel.dmg, to: dmg) { [weak self] p in
                     Task { @MainActor in
@@ -161,6 +188,11 @@ final class Updater: ObservableObject {
                     }
                 }
                 phase = .installing
+                let key = Debug.enabled ? ProcessInfo.processInfo.environment["PENSIEVE_UPDATE_PUBLIC_KEY"] ?? Self.publicKey : Self.publicKey
+                guard await Task.detached(operation: { Self.verify(dmg, signature: sig, key: key) }).value else {
+                    try? FileManager.default.removeItem(at: work)
+                    throw UpdateError("The download isn't signed by Pensieve's release key, so it wasn't installed.")
+                }
                 let bundle = Bundle.main.bundlePath
                 try await Task.detached { try Self.swap(dmg: dmg, work: work, version: rel.version, into: bundle) }.value
                 log("installed \(rel.version) at \(bundle); relaunching")
