@@ -7,7 +7,9 @@ Local search across your files, repositories and AI agent sessions, built to giv
 - **Know who to ask:** git blame shows who owns what and who has the most domain knowledge, plus what each teammate has been working on.
 - **Find knowledge gaps:** areas where most of the code was written by people no longer active in the repo, how many active people still know it, and who to ask now.
 
-Everything runs on your Mac. Text is embedded with `Qwen3-Embedding-0.6B` and stored in SQLite (with a trigram full-text index for exact matches) plus [turbovec](https://pypi.org/project/turbovec/) vector indexes. AI-written summaries and insights are optional (built-in Qwen 3.5 9B, Apple Intelligence on macOS 26+, LM Studio, Claude Code or Codex).
+Everything runs on your Mac. Text is embedded with `Qwen3-Embedding-0.6B` and stored in SQLite (with a trigram full-text index for exact matches) plus [turbovec](https://pypi.org/project/turbovec/) vector indexes. AI-written summaries and insights are optional (built-in Qwen 3.5 9B, Apple Intelligence on macOS 26+, Apple Private Cloud Compute, LM Studio, Claude Code or Codex). Setup suggests Apple Intelligence when the Mac has it: it runs on the Mac and needs no download.
+
+Apple Private Cloud Compute needs macOS 27 and a build of the app signed with Apple's managed `com.apple.developer.private-cloud-compute` entitlement, which Apple grants on request ([request form](https://developer.apple.com/contact/request/private-cloud-compute/)). The ad-hoc-signed builds from `mac/build.sh` don't have it, so Settings shows that engine as unavailable.
 
 ## Install
 

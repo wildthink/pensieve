@@ -404,7 +404,8 @@ def setup_guide() -> dict:
        allow access. When they agree, call setup_scan with those profiles.
     4. Show what the scan found, pre-checked items first, and ask what to index. Offer setup_add_source for folders
        or repos it missed.
-    5. Ask which insights engine to use (`ai`; "none" is fine, it can change later in Settings).
+    5. Ask which insights engine to use (`ai`), suggesting `recommended_ai`; "none" is fine, it can change later in
+       Settings. Say plainly when an engine sends text off the Mac (privacy "cloud").
     6. Tell them indexing takes a while and uses a lot of energy, so plug in a laptop, then call setup_start."""
     return onboarding.guide()
 

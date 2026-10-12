@@ -43,7 +43,7 @@ DEFAULTS = {
     "editor": "default",       # how code results open: default | vscode | cursor | zed
     "appearance": "system",    # system | light | dark (the Mac app and the visualizer follow it)
     # What writes summaries, topic names and insights: auto (a local server if one is running; the UI asks) |
-    # builtin (Qwen 3.5 9B via MLX) | apple (Apple Intelligence, on-device) | server (llm_url/llm_model/llm_key: local or hosted) | claude | codex | none
+    # builtin (Qwen 3.5 9B via MLX) | apple (Apple Intelligence, on-device) | pcc (Apple Private Cloud Compute) | server (llm_url/llm_model/llm_key: local or hosted) | claude | codex | none
     "ai": "auto",
     "builtin_model": "mlx-community/Qwen3.5-9B-MLX-4bit",
     "agent_model": "haiku",    # model passed to `claude -p --model` when ai = claude
@@ -80,7 +80,7 @@ DESCRIPTIONS = {
               "Choose another shortcut to give ⌘Space back to Spotlight.",
     "editor": "Where code results open: default, vscode, cursor or zed.",
     "appearance": "System, light or dark. System follows macOS.",
-    "ai": "What writes summaries and insights: builtin, apple, server, claude, codex or none (auto = not chosen yet).",
+    "ai": "What writes summaries and insights: builtin, apple, pcc, server, claude, codex or none (auto = not chosen yet).",
     "builtin_model": "The MLX model the built-in engine runs.",
     "agent_model": "Model for the Claude Code engine (claude -p --model).",
     "ai_on_battery": "Keep writing summaries and insights in the background while on battery power.",
@@ -192,8 +192,8 @@ def update(changes: dict) -> dict:
             raise ValueError("chunk_chars must be between 200 and 20000")
         if k == "appearance" and v not in ("system", "light", "dark"):
             raise ValueError("appearance must be system, light or dark")
-        if k == "ai" and v not in ("auto", "builtin", "apple", "server", "claude", "codex", "none"):
-            raise ValueError("ai must be auto, builtin, apple, server, claude, codex or none")
+        if k == "ai" and v not in ("auto", "builtin", "apple", "pcc", "server", "claude", "codex", "none"):
+            raise ValueError("ai must be auto, builtin, apple, pcc, server, claude, codex or none")
         if k == "llm_url" and not v.startswith(("http://", "https://")):
             raise ValueError("llm_url must start with http:// or https://, e.g. http://localhost:1234/v1")
         if k == "editor" and v not in ("default", "vscode", "cursor", "zed"):

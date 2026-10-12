@@ -1,12 +1,16 @@
-// pensieve-fm: Apple's on-device model (the Foundation Models framework) for the backend's `apple` AI engine
-// (pensieve/llm.py). It ships inside Pensieve.app, next to the app's own binary.
-//   pensieve-fm status    {"available": true} or {"available": false, "reason": "..."}
-//   pensieve-fm respond   reads {"system", "prompt", "max_tokens", "temperature", "schema"?} on stdin and writes
-//                         {"text": "..."}; with a JSON schema the reply is guided to it (always valid JSON)
-// Exit codes: 0 done, 2 the model isn't available (older macOS, Apple Intelligence off, model not downloaded yet),
-// 3 the prompt doesn't fit the context window, 4 Apple's guardrails refused it, 1 anything else.
+// pensieve-fm: Apple's models (the Foundation Models framework) for the backend's AI engines (pensieve/llm.py):
+// `apple`, the on-device model, and `pcc`, Apple's larger model on Private Cloud Compute. It ships inside
+// Pensieve.app, next to the app's own binary.
+//   pensieve-fm status [pcc]   {"available": true, "context": <tokens>} or {"available": false, "reason": "..."}
+//   pensieve-fm respond        reads {"model": "device"|"pcc", "system", "prompt", "max_tokens", "temperature",
+//                              "schema"?} on stdin and writes {"text": "..."}; with a JSON schema the reply is guided
+//                              to it (always valid JSON)
+// Exit codes: 0 done, 2 the model isn't available now (older macOS, Apple Intelligence off, model downloading; for
+// PCC also no entitlement, network down, quota used up), 3 the prompt doesn't fit the context window, 4 Apple's
+// guardrails refused it, 1 anything else.
 // The model gets no tools: it reads the prompt and writes text, nothing more.
 import Foundation
+import Security
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -21,23 +25,58 @@ func fail(_ code: Int32, _ msg: String) -> Never {
     exit(code)
 }
 
+/// Private Cloud Compute needs this managed entitlement, which Apple grants on request to a developer account.
+/// Without it the framework stops the process (a fatal error, not a thrown one), so it's checked before any use.
+let pccEntitlement = "com.apple.developer.private-cloud-compute"
+
+func entitled(_ name: String) -> Bool {
+    guard let task = SecTaskCreateFromSelf(nil) else { return false }
+    return SecTaskCopyValueForEntitlement(task, name as CFString, nil) as? Bool == true
+}
+
 #if canImport(FoundationModels)
 @available(macOS 26, *)
-func model() -> SystemLanguageModel {
+func deviceModel() -> SystemLanguageModel {
     // Summaries and topic names transform the user's own text, which can be anything (code, logs, arguments in a
     // transcript); the default guardrails refuse too much of it.
     SystemLanguageModel(guardrails: .permissiveContentTransformations)
 }
 
 @available(macOS 26, *)
-func unavailableReason(_ m: SystemLanguageModel) -> String? {
+func deviceStatus() -> [String: Any] {
+    let m = deviceModel()
     switch m.availability {
-    case .available: return nil
-    case .unavailable(.deviceNotEligible): return "This Mac can't run Apple Intelligence."
-    case .unavailable(.appleIntelligenceNotEnabled): return "Turn on Apple Intelligence in System Settings."
-    case .unavailable(.modelNotReady): return "macOS is still downloading the Apple Intelligence model."
-    case .unavailable(let other): return "Apple Intelligence isn't available (\(other))."
+    case .available: return ["available": true, "context": m.contextSize]
+    case .unavailable(.deviceNotEligible): return off("This Mac can't run Apple Intelligence.")
+    case .unavailable(.appleIntelligenceNotEnabled): return off("Turn on Apple Intelligence in System Settings.")
+    case .unavailable(.modelNotReady): return off("macOS is still downloading the Apple Intelligence model.")
+    case .unavailable(let other): return off("Apple Intelligence isn't available (\(other)).")
     }
+}
+
+func off(_ reason: String) -> [String: Any] { ["available": false, "reason": reason] }
+
+func pccStatus() async -> [String: Any] {
+    guard #available(macOS 27, *) else { return off("Private Cloud Compute needs macOS 27 or later.") }
+    guard entitled(pccEntitlement) else {
+        return off("This build of Pensieve isn't signed with Apple's Private Cloud Compute entitlement.")
+    }
+    let m = PrivateCloudComputeLanguageModel()
+    switch m.availability {
+    case .available: break
+    case .unavailable(.deviceNotEligible): return off("This Mac can't use Private Cloud Compute.")
+    case .unavailable(.systemNotReady): return off("Private Cloud Compute isn't ready yet; check Apple Intelligence in System Settings.")
+    case .unavailable(let other): return off("Private Cloud Compute isn't available (\(other)).")
+    }
+    let quota = m.quotaUsage
+    if quota.isLimitReached {
+        let when = quota.resetDate.map { " until \($0.formatted(date: .abbreviated, time: .shortened))" } ?? ""
+        return off("Pensieve has used its Private Cloud Compute quota\(when).")
+    }
+    var st: [String: Any] = ["available": true]
+    if let n = try? await m.contextSize { st["context"] = n }
+    if case .belowLimit(let b) = quota.status, b.isApproachingLimit { st["approaching_limit"] = true }
+    return st
 }
 
 /// A JSON schema (the subset Pensieve's prompts use: objects, arrays with min/max items, strings, numbers,
@@ -68,13 +107,21 @@ func dynamic(_ s: [String: Any], name: String) -> DynamicGenerationSchema {
 
 @available(macOS 26, *)
 func respond(_ req: [String: Any]) async -> Never {
-    let m = model()
-    if let why = unavailableReason(m) { fail(2, why) }
     let system = (req["system"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    let session: LanguageModelSession
+    if req["model"] as? String == "pcc" {
+        let st = await pccStatus()
+        guard st["available"] as? Bool == true else { fail(2, st["reason"] as? String ?? "Private Cloud Compute isn't available.") }
+        guard #available(macOS 27, *) else { fail(2, "Private Cloud Compute needs macOS 27 or later.") }
+        session = LanguageModelSession(model: PrivateCloudComputeLanguageModel(), instructions: system)
+    } else {
+        let st = deviceStatus()
+        guard st["available"] as? Bool == true else { fail(2, st["reason"] as? String ?? "Apple Intelligence isn't available.") }
+        session = LanguageModelSession(model: deviceModel(), instructions: system)
+    }
     let prompt = req["prompt"] as? String ?? ""
     let options = GenerationOptions(temperature: req["temperature"] as? Double,
                                     maximumResponseTokens: req["max_tokens"] as? Int)
-    let session = LanguageModelSession(model: m, instructions: system)
     do {
         if let schema = req["schema"] as? [String: Any] {
             let g = try GenerationSchema(root: dynamic(schema, name: "Reply"), dependencies: [])
@@ -93,10 +140,18 @@ func respond(_ req: [String: Any]) async -> Never {
 /// LanguageModelSession.GenerationError (macOS 26's) for some failures, such as a prompt over the context window.
 @available(macOS 26, *)
 func classify(_ error: Error) -> (Int32, String) {
-    let tooLong: (Int32, String) = (3, "The prompt is too long for the on-device model.")
+    let tooLong: (Int32, String) = (3, "The prompt is too long for the model.")
     let declined: (Int32, String) = (4, "Apple Intelligence declined this text.")
     let missing: (Int32, String) = (2, "The Apple Intelligence model isn't available right now.")
     if #available(macOS 27, *) {
+        if let e = error as? PrivateCloudComputeLanguageModel.Error {
+            switch e {  // all temporary: the engine is skipped until it comes back
+            case .networkFailure: return (2, "Can't reach Private Cloud Compute (network).")
+            case .quotaLimitReached: return (2, "Pensieve has used its Private Cloud Compute quota for now.")
+            case .serviceUnavailable: return (2, "Private Cloud Compute is unavailable right now.")
+            @unknown default: return (2, "\(e)")
+            }
+        }
         if let e = error as? LanguageModelError {
             switch e {
             case .contextSizeExceeded: return tooLong
@@ -118,24 +173,23 @@ func classify(_ error: Error) -> (Int32, String) {
 }
 #endif
 
-let command = CommandLine.arguments.dropFirst().first
+let args = Array(CommandLine.arguments.dropFirst())
 #if canImport(FoundationModels)
 if #available(macOS 26, *) {
-    switch command {
+    switch args.first {
     case "status":
-        let why = unavailableReason(model())
-        write(why.map { ["available": false, "reason": $0] } ?? ["available": true])
+        write(args.dropFirst().first == "pcc" ? await pccStatus() : deviceStatus())
         exit(0)
     case "respond":
         let input = FileHandle.standardInput.readDataToEndOfFile()
         guard let req = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] else { fail(1, "expected a JSON request on stdin") }
         await respond(req)
     default:
-        fail(1, "usage: pensieve-fm status | respond < request.json")
+        fail(1, "usage: pensieve-fm status [pcc] | respond < request.json")
     }
 }
 #endif
-if command == "status" {
+if args.first == "status" {
     write(["available": false, "reason": "Apple Intelligence needs macOS 26 or later."])
     exit(0)
 }

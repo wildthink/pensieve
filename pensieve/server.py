@@ -305,8 +305,8 @@ async def enricher():
                 await asyncio.sleep(10)
                 continue
             sess, topics, chunks = summarize.pending(store)
-            if llm.provider() in ("claude", "codex"):
-                chunks = []  # one CLI call per conversation chunk would be thousands of cloud calls
+            if llm.provider() in ("claude", "codex", "pcc"):
+                chunks = []  # one call per conversation chunk would be thousands of cloud calls (and PCC has a quota)
             data_topics = [t for t in await _run(datamap.pending_topics) if t["sig"] not in failed_topics]
             if data_topics:  # a handful of quick calls; first, so a session that keeps changing can't hold them up
                 res = await asyncio.gather(*[loop.run_in_executor(pool, summarize.name_data_topic, datamap, t) for t in data_topics[:3]],
