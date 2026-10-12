@@ -44,6 +44,11 @@ rm -rf "$STAGE"
 hdiutil detach -quiet /Volumes/Pensieve 2>/dev/null || true
 DEV="$(hdiutil attach -readwrite -noverify -noautoopen "$RW" | awk '/Apple_HFS/ {print $1}')"
 chflags hidden /Volumes/Pensieve/.background /Volumes/Pensieve/.fseventsd 2>/dev/null || true
+# Finder sees a just-attached disk a moment after hdiutil returns; asking before then fails ("Can't get disk")
+for _ in $(seq 40); do
+  [ "$(osascript -e 'tell application "Finder" to exists disk "Pensieve"' 2>/dev/null)" = true ] && break
+  sleep 0.5
+done
 osascript <<'EOF'
 tell application "Finder"
   tell disk "Pensieve"
