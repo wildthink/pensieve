@@ -1,11 +1,12 @@
 #!/bin/sh
 # Publish a new version: bumps the version, builds the DMG, tags it and creates the GitHub release that the
-# app's update check (and tedhaley.ca/pensieve's Download button) picks up.
+# app's update check and install.sh pick up.
 #   mac/release.sh 0.3.0 "What changed, in a sentence or two"
-# Needs: a clean working tree, gh logged in to an account that can publish to TedHaley/pensieve, and the release
+# Needs: a clean working tree, gh logged in to an account that can publish to $REPO (wildthink/pensieve), and the release
 # signing key (PENSIEVE_UPDATE_KEY, default ~/.pensieve-release/update-signing.key; see mac/scripts/update_key.swift).
 # Installed apps only install a DMG whose Pensieve.dmg.sig verifies against the key built into them.
 set -eu
+REPO=wildthink/pensieve  # also Updater.repo and REPO in install.sh
 cd "$(dirname "$0")/.."
 VERSION="${1:?usage: mac/release.sh <version> [notes]}"
 NOTES="${2:-Pensieve $VERSION}"
@@ -30,7 +31,7 @@ cp "mac/build/Pensieve-$VERSION.dmg" mac/build/Pensieve.dmg
 swift mac/scripts/update_key.swift sign "$KEY" mac/build/Pensieve.dmg > mac/build/Pensieve.dmg.sig
 git tag "v$VERSION"
 git push -q origin HEAD "v$VERSION"
-gh release create "v$VERSION" mac/build/Pensieve.dmg mac/build/Pensieve.dmg.sig --repo TedHaley/pensieve --title "Pensieve $VERSION for Mac" \
+gh release create "v$VERSION" mac/build/Pensieve.dmg mac/build/Pensieve.dmg.sig --repo "$REPO" --title "Pensieve $VERSION for Mac" \
   --notes "$NOTES
 
 **Install:** open Pensieve.dmg and drag Pensieve to Applications (Apple Silicon, macOS 14+). Already installed? The app offers the update itself."

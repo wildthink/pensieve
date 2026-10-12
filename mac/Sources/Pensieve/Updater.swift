@@ -42,6 +42,8 @@ final class Updater: ObservableObject {
     /// "Later": hidden from the panel until the next launch (still in the menu).
     @Published private(set) var dismissed = false
 
+    /// The GitHub repo whose releases are updates (mac/release.sh publishes there).
+    nonisolated static let repo = "wildthink/pensieve"
     private static let skipKey = "skippedUpdateVersion"
     private var timer: Task<Void, Never>?
 
@@ -52,7 +54,7 @@ final class Updater: ObservableObject {
 
     private var feedURL: URL {
         ProcessInfo.processInfo.environment["PENSIEVE_UPDATE_URL"].flatMap(URL.init(string:))
-            ?? URL(string: "https://api.github.com/repos/TedHaley/pensieve/releases/latest")!
+            ?? URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!
     }
 
     /// What the panel's hint line should say about updates, if anything.
@@ -231,7 +233,7 @@ final class Updater: ObservableObject {
         let parent = dest.deletingLastPathComponent()
         guard fm.isWritableFile(atPath: parent.path), fm.isWritableFile(atPath: bundlePath) else {
             throw UpdateError("Pensieve can't replace itself in \((parent.path as NSString).abbreviatingWithTildeInPath). Download Pensieve.dmg from "
-                              + "github.com/TedHaley/pensieve/releases and drag Pensieve into Applications.")
+                              + "github.com/\(repo)/releases and drag Pensieve into Applications.")
         }
         // Copy next to the app first (same volume), then swap in one step so a failure never leaves half an app.
         let staged = parent.appendingPathComponent(".Pensieve-\(version)-\(UUID().uuidString.prefix(8)).app")
