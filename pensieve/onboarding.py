@@ -118,12 +118,49 @@ def _repos(s, on):
     clones = {}  # one row per remote: Pensieve indexes a single clone of each (Repos.discover)
     for r in sorted(set(found) | set(big), key=lambda r: (len(Path(r).name), Path(r).name.lower())):
         clones.setdefault(norm_remote(git(r, "config", "--get", "remote.origin.url")) or r, []).append(r)
-    for r, *others in sorted(clones.values(), key=lambda c: Path(c[0]).name.lower()):
+    rows = []
+    for r, *others in (sorted(c, key=_last_used, reverse=True) for c in clones.values()):  # shown where it's used
         n = big.get(r) or git(r, "ls-files").count("\n")
         also = f" · also {len(others)} other clone{'s' if len(others) > 1 else ''}" if others else ""
-        out.append(dict(id=f"repos/{r}", label=Path(r).name, detail=_tilde(Path(r)) + also, size=n, unit="files",
-                        available=True, checked=r not in big and on(f"repos/{r}"), big=r in big,
-                        clones=[f"repos/{o}" for o in others]))
+        rows.append(dict(id=f"repos/{r}", label=Path(r).name, detail=_tilde(Path(r)) + also, size=n, unit="files",
+                         available=True, checked=r not in big and on(f"repos/{r}"), big=r in big, path=r,
+                         clones=[f"repos/{o}" for o in others]))
+    return out + _repo_tree(rows)
+
+
+def _last_used(root) -> float:
+    """When a checkout was last worked in (its git index changes on commit, checkout and add): of a repo's clones,
+    setup shows the most recent, so switching off a folder of old copies doesn't switch off the one in use."""
+    g = Path(root) / ".git"
+    try:
+        return max((g / "index").stat().st_mtime if g.is_dir() else 0, g.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _repo_tree(rows):
+    """The repos as a tree of folders (see sources.folder_tree), depth first: each folder row, then what's in it.
+    A folder row ('repos/<folder>/', folder=True) carries the repo count and files below it; whether it's checked
+    follows from its repos."""
+    folders, parent_of = sources.folder_tree([r["path"] for r in rows])
+    for r in rows:
+        r["parent"] = f"repos/{parent_of[r['path']]}/" if parent_of[r["path"]] else None
+    nodes = [dict(id=f"repos/{f}/", label=label, detail=_tilde(Path(f)), path=f, folder=True, available=True,
+                  checked=False, unit="files", parent=f"repos/{parent}/" if parent else None,
+                  repos=sum(1 for r in rows if settings._under(r["path"], f)),
+                  size=sum(r["size"] or 0 for r in rows if settings._under(r["path"], f)))
+             for f, (parent, label) in folders.items()]
+    kids = {}
+    for i in nodes + rows:
+        kids.setdefault(i["parent"], []).append(i)
+    out = []
+
+    def walk(parent):
+        for i in sorted(kids.get(parent, []), key=lambda i: (not i.get("folder"), i["label"].lower())):
+            out.append(i)
+            if i.get("folder"):
+                walk(i["id"])
+    walk(None)
     return out
 
 
@@ -211,6 +248,27 @@ def index(path: str, cwd=None, agent=False) -> dict:
             else "Pensieve isn't set up yet, so nothing is indexed until setup is done (setup_guide)."}
 
 
+def _rules_from(tree, chosen) -> dict:
+    """The fewest repo_rules that say what was chosen: each largest folder with nothing chosen in it is switched
+    off (so repos found there later stay off too), and each repo left out elsewhere is switched off by itself, with
+    its other clones (else one of them would stand in). Rules outside what the scan showed are kept."""
+    repos = [i for i in tree if not i.get("folder")]
+    under = settings._under
+    empty = [f for f in tree if f.get("folder") and not any(r["id"] in chosen for r in repos if under(r["path"], f["path"]))]
+    off_folders = [f["path"] for f in empty if not any(g is not f and under(f["path"], g["path"]) for g in empty)]
+    shown = [f["path"] for f in tree if f.get("folder") and not f.get("parent")] + \
+        [r["path"] for r in repos] + [c[6:] for r in repos for c in r.get("clones", [])]
+    rules = {k: v for k, v in settings.get("repo_rules").items()
+             if not any(under(str(Path(k).expanduser()), p) for p in shown)}
+    rules.update({settings._rule_key(Path(f), True): False for f in off_folders})
+    for r in repos:
+        if r["id"] not in chosen:
+            for p in [r["path"]] + [c[6:] for c in r.get("clones", [])]:
+                if not any(under(p, f) for f in off_folders):
+                    rules[settings._rule_key(Path(p), False)] = False
+    return rules
+
+
 def start(chosen=None, recommended=False, ai=None) -> dict:
     """Index exactly the chosen source ids (or, with `recommended`, what the scan pre-checked): every other source is
     switched off, then indexing starts. Categories that were never scanned are switched off whole. `ai` picks the
@@ -231,14 +289,18 @@ def start(chosen=None, recommended=False, ai=None) -> dict:
     unknown = chosen - known
     if unknown:
         raise ValueError(f"unknown sources: {', '.join(sorted(unknown))}; scan lists them")
+    tree = [i for i in items if i.get("path")]  # git repos and their folders: chosen as repo_rules, not `disabled`
+    for f in (i for i in tree if i.get("folder") and i["id"] in chosen):  # a folder: every repo in it
+        chosen |= {r["id"] for r in tree if not r.get("folder") and settings._under(r["path"], f["path"])}
+    chosen -= {i["id"] for i in tree if i.get("folder")}
     all_cats = [c for c, _, _ in sources.CATEGORIES]
+    flat = known - {i["id"] for i in tree}
     off = [d for d in settings.get("disabled") if d not in known and d not in all_cats]
-    off += [i for i in known if i not in chosen]
-    off += [c for i in items if i["id"] not in chosen for c in i.get("clones", [])]  # else another clone stands in
-    off = [d for d in off if d not in {c for i in items if i["id"] in chosen for c in i.get("clones", [])}]
+    off += [i for i in flat if i not in chosen]
     off += [c for c in all_cats if not any(i in chosen and i.startswith(c + "/") for i in known)]  # incl. never scanned
     big = [i["id"][6:] for i in items if i.get("big") and i["id"] in chosen]
-    changes = {"disabled": off, "repos": list(dict.fromkeys(settings.get("repos") + big)), "setup_done": True}
+    changes = {"disabled": off, "repos": list(dict.fromkeys(settings.get("repos") + big)), "setup_done": True,
+               "repo_rules": _rules_from(tree, chosen)}
     if ai is not None:
         changes["ai"] = ai
     settings.update(changes)

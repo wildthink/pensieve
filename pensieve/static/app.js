@@ -1896,7 +1896,7 @@ function srcItem(it, catOn, parentOff = false) {
   const detail = off ? 'Not found on this Mac' : it.detail;
   const shown = it.kind === 'rule' ? detail : midEllipsis(detail, 64);
   return `<div class="src-item ${it.kind === 'rule' ? 'rule' : ''} ${it.parent ? 'child' : ''} ${catOn && !parentOff ? '' : 'muted-all'} ${off ? 'na' : ''}">
-    ${it.kind === 'worktree' ? '<span title="Synced with its repo"></span>' : `<label class="tog" title="${off ? 'Not found on this Mac' : it.enabled ? 'Switch off' : 'Switch on'}"><input type="checkbox" data-src-id="${esc(it.id)}" ${it.enabled ? 'checked' : ''} ${off || !catOn ? 'disabled' : ''}></label>`}
+    ${it.kind === 'worktree' ? '<span title="Synced with its repo"></span>' : `<label class="tog" title="${off ? 'Not found on this Mac' : it.enabled ? 'Switch off' : 'Switch on'}"><input type="checkbox" data-src-id="${esc(it.id)}" ${it.enabled ? 'checked' : ''} ${it.mixed ? 'data-src-mixed' : ''} ${off || !catOn ? 'disabled' : ''}></label>`}
     <div class="src-tx"><div class="src-l">${esc(it.label)}${srcHint(it.id)}</div><div class="src-d ${it.error ? 'warn' : ''}" title="${esc(detail)}">${it.error ? '⚠ ' : ''}${esc(it.error ? detail : shown)}</div></div>
     <div class="src-n">${it.kind === 'rule' ? '' : srcCount(it.count, it.unit)}</div>
     ${it.kind === 'rule' || it.map == null ? '<span></span>' : mapBtn(it.id, it.map, off || !catOn || !it.enabled)}
@@ -1938,6 +1938,7 @@ function renderSources() {
   const typed = Object.fromEntries($$('[data-src-add-in]', box).map(i => [i.dataset.srcAddIn, i.value]));
   const focused = document.activeElement?.dataset?.srcAddIn;
   box.innerHTML = sourcesHtml();
+  $$('[data-src-mixed]', box).forEach(i => { i.indeterminate = true; });  // a folder whose repos don't all agree
   $$('[data-src-add-in]', box).forEach(i => { i.value = typed[i.dataset.srcAddIn] || ''; if (i.dataset.srcAddIn === focused) i.focus(); });
   bindFields(box);
   $$('[data-opts]', box).forEach(d => d.ontoggle = () => srcState.opts[d.open ? 'add' : 'delete'](d.dataset.opts));
@@ -2001,11 +2002,11 @@ const ENERGY_IC = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M13 
 // it's for, permission to look, what to index, the insights engine, then start. No folder is read before "Look".
 const SETUP_STEPS = ['about', 'profile', 'look', 'choose', 'ai', 'start'];
 const SETUP_ADD = {files: 'Add folder…', repos: 'Add repo…', agents: 'Add session folder…'};
-const setupState = {step: 'about', guide: null, profiles: new Set(), cands: null, chosen: new Set(), ai: null, busy: false, err: null, adding: null};
+const setupState = {step: 'about', guide: null, profiles: new Set(), cands: null, chosen: new Set(), ai: null, busy: false, err: null, adding: null, open: new Set()};
 async function openSetup() {
   let el = $('#setupsheet');
   if (!el) { el = document.createElement('div'); el.id = 'setupsheet'; el.className = 'setup-sheet'; document.body.appendChild(el); }
-  Object.assign(setupState, {step: 'about', profiles: new Set(), cands: null, chosen: new Set(), busy: false, err: null, adding: null});
+  Object.assign(setupState, {step: 'about', profiles: new Set(), cands: null, chosen: new Set(), busy: false, err: null, adding: null, open: new Set()});
   el.innerHTML = '<div class="setup-card"><div class="spinner" style="margin:24px auto"></div></div>';
   try { setupState.guide = await api('/api/setup?scan=0'); }
   catch (e) { el.innerHTML = `<div class="setup-card"><p class="err">Could not load setup: ${esc(e.message)}</p></div>`; return; }
@@ -2020,7 +2021,7 @@ async function setupScan(extra) {
   const d = await api(`/api/setup?fresh=1&categories=${enc(cats.join(','))}`);
   const first = !setupState.cands;
   setupState.cands = d.candidates;
-  if (first) d.candidates.forEach(c => c.items.forEach(i => i.checked && setupState.chosen.add(i.id)));
+  if (first) d.candidates.forEach(c => c.items.forEach(i => { if (i.checked && !i.folder) setupState.chosen.add(i.id); if (i.folder && !i.parent) setupState.open.add(i.id); }));
 }
 function setupGo(step) { setupState.step = step; setupState.err = null; renderSetup(); $('#setupsheet')?.scrollTo(0, 0); }
 function renderSetup() {
@@ -2047,15 +2048,31 @@ function renderSetup() {
       ${setupCats().map(c => `<div class="setup-cat"><h3>${esc(c.label)}</h3><p>${esc(c.reads)}</p></div>`).join('')}
       ${btns('choose', st.busy ? 'Looking…' : 'Look for sources')}`;
   } else if (step === 'choose') {
-    const row = i => `<label class="setup-row ${i.available ? '' : 'na'}"><input type="checkbox" data-setup-id="${esc(i.id)}" ${st.chosen.has(i.id) ? 'checked' : ''} ${i.available ? '' : 'disabled'}>
+    const row = i => `<label class="setup-row ${i.available ? '' : 'na'}"><input type="checkbox" aria-label="${esc(i.label)}" data-setup-id="${esc(i.id)}" ${st.chosen.has(i.id) ? 'checked' : ''} ${i.available ? '' : 'disabled'}>
       <span class="tx"><b>${esc(i.label)}${i.big ? ' <span class="badge">big</span>' : ''}</b><span>${esc(i.available ? i.detail : 'Not found on this Mac')}</span></span>
       <span class="n">${i.size != null ? `${i.size.toLocaleString()} ${esc(i.unit)}` : ''}</span></label>`;
+    // Git repos come as a tree of folders (folder rows have folder: true and a parent chain). A folder's box is
+    // checked when every repo in it is, mixed when some are; clicking it switches all of them. Top folders start open.
+    const treeRows = list => {
+      const byId = new Map(list.map(i => [i.id, i])), under = new Map();
+      list.filter(i => !i.folder).forEach(r => { for (let p = r.parent; p; p = byId.get(p)?.parent) (under.get(p) || under.set(p, []).get(p)).push(r.id); });
+      const depth = i => i.parent ? 1 + depth(byId.get(i.parent)) : 0, shown = i => !i.parent || (st.open.has(i.parent) && shown(byId.get(i.parent)));
+      return list.filter(shown).map(i => {
+        const pad = `style="padding-left:${10 + depth(i) * 18}px"`;
+        if (!i.folder) return row(i).replace('<label class="setup-row', `<label ${pad} class="setup-row`);
+        const ids = under.get(i.id) || [], n = ids.filter(id => st.chosen.has(id)).length, open = st.open.has(i.id);
+        return `<div class="setup-row folder" ${pad}><input type="checkbox" data-setup-folder="${esc(i.id)}" ${n && n === ids.length ? 'checked' : ''} ${n && n < ids.length ? 'data-mixed' : ''} aria-label="${esc(i.label)}: all repos">
+          <button class="tx linkbtn" data-setup-fold="${esc(i.id)}" aria-expanded="${open}" aria-label="${open ? 'Hide' : 'Show'} the repos in ${esc(i.label)}"><b><svg class="caret" viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><path d="M3.5 1.5 7 5l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>${esc(i.label)}</b>${i.detail !== i.label ? `<span>${esc(i.detail)}</span>` : ''}</button>
+          <span class="n">${n === ids.length ? '' : `${n} of `}${ids.length.toLocaleString()} repos · ${(i.size || 0).toLocaleString()} files</span></div>`;
+      }).join('');
+    };
+    const rows = items => items.some(i => i.folder) ? treeRows(items) : items.map(row).join('');
     const add = kind => SETUP_ADD[kind] ? (st.adding === kind && !window.pensieveNative
       ? `<div class="set-add setup-add"><input class="set-in" data-setup-addin="${kind}" placeholder="${kind === 'repos' ? '~/code/my-repo' : '~/folder'}"><button class="btn" data-setup-addgo="${kind}">Add</button></div>`
       : `<button class="linkbtn setup-addbtn" data-setup-add="${kind}">${esc(SETUP_ADD[kind])}</button>`) : '';
     const more = Object.keys(SETUP_ADD).filter(k => !st.cands.some(c => c.id === k));
     body = `<h1>Choose what Pensieve indexes</h1><p class="sub">This is what Pensieve found. Add anything it missed. You can change this later in Settings → Sources.</p>
-      ${st.cands.map(c => `<div class="setup-cat"><h3>${esc(c.label)}</h3><p>${esc(c.description)}</p>${c.items.map(row).join('') || '<p class="muted">Nothing found.</p>'}${add(c.id)}</div>`).join('')}
+      ${st.cands.map(c => `<div class="setup-cat"><h3>${esc(c.label)}</h3><p>${esc(c.description)}${c.items.some(i => i.folder) ? ' Switch a folder to include or leave out everything in it, including repos added there later.' : ''}</p>${rows(c.items) || '<p class="muted">Nothing found.</p>'}${add(c.id)}</div>`).join('')}
       ${more.length ? `<div class="setup-cat"><h3>Something else?</h3>${more.map(add).join(' · ')}</div>` : ''}
       ${btns('ai', 'Next', picked.length > 0)}`;
   } else if (step === 'ai') {
@@ -2074,6 +2091,14 @@ function renderSetup() {
   $('[data-setup-back]', el)?.addEventListener('click', () => setupGo(SETUP_STEPS[n - 1]));
   $$('[data-setup-prof]', el).forEach(b => b.onclick = () => { const id = b.dataset.setupProf; st.profiles[st.profiles.has(id) ? 'delete' : 'add'](id); st.cands = null; st.chosen.clear(); renderSetup(); });
   $$('[data-setup-id]', el).forEach(c => c.onchange = () => { st.chosen[c.checked ? 'add' : 'delete'](c.dataset.setupId); renderSetup(); });
+  $$('[data-mixed]', el).forEach(c => { c.indeterminate = true; });
+  $$('[data-setup-folder]', el).forEach(c => c.onchange = () => {  // every repo below this folder, on or off
+    const items = st.cands.flatMap(x => x.items), byId = new Map(items.map(i => [i.id, i]));
+    const inside = r => { for (let p = r.parent; p; p = byId.get(p)?.parent) if (p === c.dataset.setupFolder) return true; return false; };
+    items.filter(i => !i.folder && inside(i)).forEach(r => st.chosen[c.checked ? 'add' : 'delete'](r.id));
+    renderSetup();
+  });
+  $$('[data-setup-fold]', el).forEach(b => b.onclick = () => { const id = b.dataset.setupFold; st.open[st.open.has(id) ? 'delete' : 'add'](id); renderSetup(); });
   $$('[data-setup-ai]', el).forEach(b => b.onclick = () => { st.ai = b.dataset.setupAi; renderSetup(); });
   $$('[data-setup-add]', el).forEach(b => b.onclick = () => {
     if (window.pensieveNative) window.webkit?.messageHandlers?.pensieveWindow?.postMessage({pickFolder: b.dataset.setupAdd});

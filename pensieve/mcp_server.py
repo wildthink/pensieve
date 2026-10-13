@@ -345,7 +345,8 @@ def list_sources() -> list[dict]:
 @tool()
 def set_source(id: str, enabled: bool | None = None, map: bool | None = None) -> dict:
     """Switch a whole category ('agents', 'files', 'repos', 'apps') or one item ('agents/codex', 'files/~/Downloads',
-    'repos/discover', 'repos/<repo root>', 'apps/apple_notes') on or off (`enabled`; off removes what it indexed),
+    'repos/discover', 'repos/<repo root>', 'repos/<folder>/' for every repo in a folder, now and later,
+    'apps/apple_notes') on or off (`enabled`; off removes what it indexed),
     or only on or off the map (`map`; it stays searchable)."""
     if enabled is not None:
         sources.set_source(id, enabled, _c()["repos"])
@@ -431,7 +432,8 @@ def setup_add_source(kind: str, path: str) -> dict:
 @tool()
 def setup_start(sources: list[str] | None = None, recommended: bool = False, ai: str | None = None) -> dict:
     """Finish setup: index exactly these source ids from setup_scan (or, with recommended=true, the pre-checked
-    ones); everything else is switched off. `ai` sets the insights engine (an id from setup_guide's `ai`, or "none").
+    ones); everything else is switched off. Git repos come grouped in folders ('repos/<folder>/'): a folder id
+    stands for every repo in it, and a folder with nothing chosen stays off for repos added there later. `ai` sets the insights engine (an id from setup_guide's `ai`, or "none").
     Indexing starts at once and can take a while; search works meanwhile."""
     res = onboarding.start(sources, recommended, ai)
     from pensieve import server
