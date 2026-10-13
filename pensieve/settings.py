@@ -24,6 +24,10 @@ DEFAULTS = {
     # Sources switched off, by id (see sources.py): a whole category ("agents", "files", "repos", "apps") or one item
     # ("agents/codex", "files/~/Downloads", "repos/sweep", "repos/<repo root>", "apps/apple_notes").
     "disabled": ["apps/apple_notes"],
+    # Git repos on or off by where they are: {"~/Archive/": false, "~/dev/ThirdParty/swift-nio": true}. A key ending in
+    # "/" is a folder and covers every repo below it, found now or later; a key without it is that one repo. The most
+    # specific rule wins (a repo's own, then its nearest folder's); with none, a repo is on.
+    "repo_rules": {},
     "max_file_mb": 20,
     # Per file type in Files & folders (see files.TYPES): index = content | name | off, map = shown on the map.
     # Types whose content can't be read (media, other) are indexed by name and never placed on the map.
@@ -67,6 +71,7 @@ DESCRIPTIONS = {
     "exclude": "Folder names never indexed or descended into.",
     "exclude_files": "File name patterns never indexed (secrets, keys, password exports). Case-insensitive globs.",
     "disabled": "Sources that are switched off (whole categories or single items). Easier to change from Sources.",
+    "repo_rules": "Git repos on or off by folder: {\"~/Archive/\": false} (a trailing / covers the folder's repos, now and later) or one repo: {\"~/code/app\": true}. The most specific rule wins. Easier to change from Sources.",
     "max_file_mb": "Skip documents larger than this.",
     "file_types": "For each file type: read its content, index only its name, or skip it; and whether it shows on the map.",
     "off_map": "Sources that are searchable but do not show on the map.",
@@ -122,6 +127,7 @@ def load() -> dict:
             _data = {**DEFAULTS, **{k: v for k, v in saved.items() if k in DEFAULTS}}
             if saved and "setup_done" not in saved:  # set up by a version from before the setup step
                 _data["setup_done"] = True
+            _data["repo_rules"], _data["disabled"] = _migrate_repo_rules(_data["repo_rules"], _data["disabled"])
             off = _data["disabled"]  # the two repo-discovery rules became one
             if "repos/sessions" in off or "repos/sweep" in off:
                 _data["disabled"] = [d for d in off if d not in ("repos/sessions", "repos/sweep")] + \
@@ -182,6 +188,12 @@ def update(changes: dict) -> dict:
                 if t in ("media", "other") and merged[t]["index"] == "content":
                     raise ValueError(f"{t} files have no text to read: index them by name or switch them off")
             v = merged
+        elif k == "repo_rules":
+            if not isinstance(v, dict) or not all(isinstance(x, str) and isinstance(y, bool) for x, y in v.items()):
+                raise ValueError('repo_rules maps paths to true/false, e.g. {"~/Archive/": false}')
+            if any(not Path(x).expanduser().is_absolute() for x in v):
+                raise ValueError("repo_rules paths must be absolute or start with ~")
+            v = {_rule_key(Path(x).expanduser(), x.endswith("/")): y for x, y in v.items()}  # replaces, not merges
         elif isinstance(d, dict):
             if not isinstance(v, dict) or not all(isinstance(x, bool) for x in v.values()):
                 raise ValueError(f"{k} must map names to true/false")
@@ -219,10 +231,80 @@ def on_change(fn):
 
 
 def enabled(source_id: str) -> bool:
-    """A source is on unless it, or any category above it, is in `disabled`. 'files/~/Docs' -> checks 'files' too."""
+    """A source is on unless it, or any category above it, is in `disabled`. 'files/~/Docs' -> checks 'files' too.
+    A repo ('repos/<root>') or a folder of repos ('repos/<folder>/') also follows `repo_rules`."""
     off = set(get("disabled"))
     cat = source_id.split("/", 1)[0]
-    return source_id not in off and cat not in off
+    if source_id in off or cat in off:
+        return False
+    p = repo_path(source_id)
+    return p is None or repo_rule(p, folder=source_id.endswith("/")) is not False
+
+
+# ---- repo_rules: git repos on or off by folder --------------------------------------------------------------------
+def _tilde(p) -> str:
+    p, home = str(p), str(Path.home())
+    return "~" + p[len(home):] if p == home or p.startswith(home + "/") else p
+
+
+def _rule_key(p: Path, folder: bool) -> str:
+    """How a rule is saved: the path with ~ for home, and a trailing / for a folder."""
+    return _tilde(str(p).rstrip("/") or "/") + ("/" if folder else "")
+
+
+def _under(p: str, folder: str) -> bool:
+    return p == folder or p.startswith(folder.rstrip("/") + "/")
+
+
+def repo_path(source_id: str) -> str | None:
+    """The absolute path in a repo or repo-folder source id ('repos/<root>', 'repos/<folder>/'), else None."""
+    rest = source_id[6:] if source_id.startswith("repos/") else ""
+    return str(Path(rest).expanduser()).rstrip("/") or "/" if rest[:1] in ("/", "~") else None
+
+
+def repo_rule(path: str, folder=False, rules=None) -> bool | None:
+    """The rule that decides a repo (or, with `folder`, a folder of repos) at this absolute path: the repo's own rule,
+    else its nearest folder's, else None (no rule: on)."""
+    rules = get("repo_rules") if rules is None else rules
+    if not folder:
+        own = rules.get(_rule_key(Path(path), False))
+        if own is not None:
+            return own
+    best, depth = None, -1
+    for k, v in rules.items():
+        f = str(Path(k).expanduser())
+        if k.endswith("/") and _under(path, f) and len(f) > depth:
+            best, depth = v, len(f)
+    return best
+
+
+def repo_rule_paths():
+    """(folders on, repos on, folders off) as absolute paths: where discovery always looks, and what it skips."""
+    rules = get("repo_rules")
+    pick = lambda folder, on: [str(Path(k).expanduser()) for k, v in rules.items() if k.endswith("/") == folder and v is on]
+    return pick(True, True), pick(False, True), pick(True, False)
+
+
+def _set_repo_rule(path: str, folder: bool, on: bool) -> dict:
+    """Switch a repo or a folder of repos. A folder's rule replaces every rule below it (the choices made inside it);
+    a rule that says what its folder already says isn't kept."""
+    rules = dict(get("repo_rules"))
+    key = _rule_key(Path(path), folder)
+    rules.pop(key, None)
+    if folder:
+        rules = {k: v for k, v in rules.items() if not _under(str(Path(k).expanduser()), path)}
+    if (repo_rule(path, folder, rules) is not False) != on:
+        rules[key] = on
+    return rules
+
+
+def _migrate_repo_rules(rules: dict, disabled: list):
+    """Repos switched off one by one used to be listed in `disabled`; they are repo rules now."""
+    old = [d for d in disabled if repo_path(d) is not None]
+    if not old:
+        return rules, disabled
+    rules = {**{_rule_key(Path(repo_path(d)), d.endswith("/")): False for d in old}, **rules}
+    return rules, [d for d in disabled if d not in old]
 
 
 def on_map(source_id: str) -> bool:
@@ -243,6 +325,10 @@ def file_type(t: str) -> dict:
 
 
 def set_enabled(source_id: str, on: bool) -> dict:
+    p = repo_path(source_id)
+    if p is not None:  # a repo or a folder of repos: a repo rule
+        return update({"repo_rules": _set_repo_rule(p, source_id.endswith("/"), on),
+                       "disabled": [d for d in get("disabled") if d != source_id]})
     off = [d for d in get("disabled") if d != source_id]
     if not on:
         off.append(source_id)

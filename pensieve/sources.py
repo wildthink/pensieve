@@ -17,6 +17,48 @@ def _home(p) -> str:
     return str(p).replace(str(Path.home()), "~", 1)
 
 
+def folder_tree(roots, extra=()):
+    """Folders to group repos by, so a whole folder can be switched at once. A folder is shown when it holds two or
+    more repos or shown folders; a chain of folders with one thing each folds into one, labeled by its path from
+    the folder above ("WildThink/Before_2024/SightCall"). `extra` folders (e.g. ones with a rule) are always shown.
+    Returns {folder: (parent folder or None, label)} and {root: its folder or None}, all absolute paths."""
+    from collections import defaultdict
+    kids = defaultdict(set)
+    for r in set(roots):
+        child = Path(r)
+        for a in Path(r).parents:
+            kids[str(a)].add(str(child))
+            child = a
+    keep = {a for a, c in kids.items() if len(c) >= 2} | {str(Path(e)) for e in extra}
+
+    def up(p):  # nearest shown folder above p
+        return next((str(a) for a in Path(p).parents if str(a) in keep), None)
+    folders = {}
+    for f in keep:
+        parent = up(f)
+        folders[f] = (parent, str(Path(f).relative_to(parent)) if parent else _home(f))
+    return folders, {r: up(r) for r in roots}
+
+
+def _folder_items(rows, rule_folders):
+    """Folder rows for Sources: `rows` are repo items (parent 'repos/discover'), which get their folder as parent.
+    A folder is on or off as its rule says, and mixed when the repos in it don't all agree."""
+    folders, parent_of = folder_tree([r["path"] for r in rows], rule_folders)
+    out = []
+    for f, (parent, label) in sorted(folders.items()):
+        inside = [r for r in rows if settings._under(r["path"], f)]
+        on = settings.enabled(f"repos/{f}/")
+        n = len(inside)
+        out.append(dict(id=f"repos/{f}/", kind="folder", label=label, path=f,
+                        detail=_home(f) + (f" · {n} repo{'s' if n != 1 else ''}" if n else " · switched off, with any repos in it"),
+                        available=Path(f).is_dir(), enabled=on, mixed=any(r["enabled"] != on for r in inside),
+                        count=sum(r.get("count", 0) for r in inside), unit="files",
+                        parent=f"repos/{parent}/" if parent else "repos/discover"))
+    for r in rows:
+        r["parent"] = f"repos/{parent_of[r['path']]}/" if parent_of.get(r["path"]) else "repos/discover"
+    return out
+
+
 def catalog(store, repos, files) -> list[dict]:
     on = settings.enabled
     with store.lock:
@@ -87,11 +129,15 @@ def catalog(store, repos, files) -> list[dict]:
         repo_items.append(dict(id=f"repos/{sk['root']}", label=Path(sk["root"]).name, detail=f"{_home(sk['root'])} · skipped: "
                                f"{sk['files']:,} files (switch on to index anyway)", available=True, enabled=False, count=0, unit="files",
                                parent="repos/discover"))
-    for d in settings.get("disabled"):  # repos switched off no longer appear in the repos table; keep them listed
-        if d.startswith("repos/") and d not in ("repos/sessions", "repos/sweep", "repos/discover") and not any(i["id"] == d for i in repo_items):
-            r = d[6:]
-            repo_items.append(dict(id=d, label=Path(r).name, detail=_home(r), available=Path(r).is_dir(), enabled=False, count=0,
-                                   unit="files", parent="repos/discover"))
+    for k, v in s["repo_rules"].items():  # repos switched off no longer appear in the repos table; keep them listed
+        r = str(Path(k).expanduser())
+        if not k.endswith("/") and not v and not any(i["id"] == f"repos/{r}" for i in repo_items):
+            repo_items.append(dict(id=f"repos/{r}", label=Path(r).name, detail=_home(r), available=Path(r).is_dir(),
+                                   enabled=False, count=0, unit="files", parent="repos/discover"))
+    found = [i for i in repo_items if i.get("parent") == "repos/discover"]
+    for i in found:
+        i["path"] = i["id"][6:]
+    repo_items += _folder_items(found, [str(Path(k).expanduser()) for k in s["repo_rules"] if k.endswith("/")])
 
     app_items = []
     for k, a in apps.APPS.items():
@@ -102,17 +148,17 @@ def catalog(store, repos, files) -> list[dict]:
                               count=sum(n for r, n in per_root.items() if any(r == x or r.startswith(x + "/") for x in roots)), unit="items"))
 
     items = {"agents": agents, "files": folders, "repos": repo_items, "apps": app_items}
-    for it in (i for group in items.values() for i in group if i.get("kind") not in ("rule", "worktree")):
+    for it in (i for group in items.values() for i in group if i.get("kind") not in ("rule", "worktree", "folder")):
         it["map"] = settings.on_map(it["id"])
     return [dict(id=c, label=label, description=desc, enabled=on(c), map=settings.on_map(c), items=items[c],
-                 count=sum(i.get("count", 0) for i in items[c] if i.get("kind") not in ("rule", "worktree")),
+                 count=sum(i.get("count", 0) for i in items[c] if i.get("kind") not in ("rule", "worktree", "folder")),
                  addable=c != "apps")
             for c, label, desc in CATEGORIES]
 
 
 def set_source(id: str, on: bool, repos=None, map_only=False):
     """Switch a category or item on/off (or, with map_only, only on/off the map). Switching on a repo the sweep
-    skipped as too big adds it to `repos`."""
+    skipped as too big adds it to `repos`. 'repos/<folder>/' switches every repo in that folder, now and later."""
     valid = {c for c, _, _ in CATEGORIES}
     if id.split("/", 1)[0] not in valid:
         raise ValueError(f"unknown source {id!r}: ids start with {', '.join(sorted(valid))}")

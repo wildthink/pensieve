@@ -110,10 +110,11 @@ def chunk_code(text: str):
     return [c for c in out if c[2].strip()]
 
 
-def find_repos(base: Path, depth: int, exclude: set) -> list[str]:
-    """Git repo roots at or below base (not descending into a repo once found, nor hidden/excluded folders)."""
+def find_repos(base: Path, depth: int, exclude: set, skip=()) -> list[str]:
+    """Git repo roots at or below base (not descending into a repo once found, nor hidden/excluded folders, nor the
+    absolute paths in `skip`: folders switched off in repo_rules)."""
     import os
-    if not base.is_dir():
+    if not base.is_dir() or str(base) in skip:
         return []
     if (base / ".git").exists():
         return [str(base.resolve())]
@@ -123,7 +124,8 @@ def find_repos(base: Path, depth: int, exclude: set) -> list[str]:
             out.append(str(Path(d).resolve()))
             dirs[:] = []
             continue
-        dirs[:] = [x for x in dirs if not x.startswith(".") and x not in exclude] if len(Path(d).parts) - depth0 < depth else []
+        dirs[:] = [x for x in dirs if not x.startswith(".") and x not in exclude and os.path.join(d, x) not in skip] \
+            if len(Path(d).parts) - depth0 < depth else []
     return out
 
 
@@ -282,16 +284,21 @@ class Repos:
 
     # ---- discovery ---------------------------------------------------------
     def _extra_roots(self):
-        """Repos beyond the ones sessions ran in: settings `repos`, repos inside the indexed `folders`, and (with
-        the repos/discover source) repos found under `sweep_roots`. Folders are searched `sweep_depth` levels deep."""
+        """Repos beyond the ones sessions ran in: settings `repos` and repos switched on in `repo_rules`, repos inside
+        folders switched on there, and (with the repos/discover source) repos inside the indexed `folders` and under
+        `sweep_roots`. Folders are searched `sweep_depth` levels deep, never into folders switched off."""
         hit = getattr(self, "_extra", None)
         if hit and hit[0] == settings.load() and time.time() - hit[1] < 600:
             return hit[2]
         s = settings.load()
         ex = set(s["exclude"])
-        out = [r for base in settings.paths("repos") for r in find_repos(base, s["sweep_depth"], ex)]
-        swept = [r for base in (settings.paths("folders") + settings.paths("sweep_roots") if settings.enabled("repos/discover") else [])
-                 for r in find_repos(base, s["sweep_depth"], ex)]
+        folders_on, repos_on, skip = settings.repo_rule_paths()
+        skip = set(skip)
+        out = [r for base in settings.paths("repos") + [Path(p) for p in repos_on]
+               for r in find_repos(base, s["sweep_depth"], ex, skip)]
+        bases = (settings.paths("folders") + settings.paths("sweep_roots") if settings.enabled("repos/discover") else []) + \
+            [Path(p) for p in folders_on]
+        swept = [r for base in bases for r in find_repos(base, s["sweep_depth"], ex, skip)]
         self.skipped = []
         for r in dict.fromkeys(swept):  # found by the sweep: skip giant repos unless named explicitly or used by sessions
             n = git(r, "ls-files").count("\n")
@@ -318,8 +325,11 @@ class Repos:
             use[r] += 0
         by_remote = {}
         for r, n in use.most_common():
+            if settings.repo_rule(r, folder=True) is False and settings.repo_rule(r) is False:
+                continue  # in a folder switched off: another clone of it, elsewhere, can stand in
             remote = norm_remote(git(r, "config", "--get", "remote.origin.url")) or r
             by_remote.setdefault(remote, (r, remote))
+        # a repo switched off by itself (its own rule) is off as a whole, not replaced by another clone
         return [v for v in by_remote.values() if settings.enabled(f"repos/{v[0]}")]
 
     @locked
@@ -488,7 +498,8 @@ class Repos:
         synced, but kept in the index."""
         if not (settings.enabled("repos") and settings.enabled(f"repos/{root}")):
             return True
-        added = any(root == str(p) or root.startswith(f"{p}/") for p in settings.paths("repos"))
+        added = any(root == str(p) or root.startswith(f"{p}/") for p in settings.paths("repos")) or \
+            settings.repo_rule(root) is True  # switched on by a rule: indexed whatever discovery does
         return not added and not settings.enabled("repos/discover")
 
     def remove(self, root, log=lambda m: print(m, flush=True)):

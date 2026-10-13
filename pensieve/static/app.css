@@ -961,6 +961,11 @@ body.native #top{pointer-events:auto}  /* the whole top bar drags the window, li
 .setup-row .tx b{font-size:13px;font-weight:600}
 .setup-row .tx span{font-size:11.5px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .setup-row .n{font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums}
+.setup-row.folder{cursor:default}
+.setup-row.folder .tx{align-items:flex-start;text-align:left;padding:0;background:none;border:0;color:inherit;cursor:pointer;font:inherit}
+.setup-row.folder .tx b{display:flex;align-items:center;gap:6px}
+.setup-row.folder .caret{flex:none;color:var(--text-3);transition:transform .12s}
+.setup-row.folder [aria-expanded=true] .caret{transform:rotate(90deg)}
 .setup-energy,.sync-strip{display:flex;gap:10px;align-items:flex-start;border-radius:12px;padding:12px 14px;background:color-mix(in srgb,#ff9f0a 14%,transparent);font-size:12.5px;line-height:1.5}
 .setup-energy svg,.sync-strip svg{color:#ff9f0a;flex:none;margin-top:2px}
 .setup-energy b,.sync-strip b{display:block;font-size:13px}
